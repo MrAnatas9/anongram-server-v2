@@ -1,0 +1,8 @@
+[phases.setup]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["echo '🚀 Building Anongram Server...'"]
+
+[start]
+cmd = "npm start"
