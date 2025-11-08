@@ -44,7 +44,8 @@ const emailConfig = {
   }
 };
 
-const emailTransporter = nodemailer.createTransporter(emailConfig);
+// ИСПРАВЛЕНО: createTransporter -> createTransport
+const emailTransporter = nodemailer.createTransport(emailConfig);
 
 // Utility functions
 async function sendVerificationCode(email, code) {
@@ -454,7 +455,7 @@ server.listen(PORT, '0.0.0.0', () => {
 ✨ ===================================================
 🚀 ANONGRAM SERVER v2.0 ЗАПУЩЕН!
 📍 Порт: ${PORT}
-🌐 URL: https://anongram-production.up.railway.app
+🌐 URL: https://anongram-server.onrender.com
 📧 Email: ${emailConfig.auth.user}
 💬 WebSocket: Готов
 💰 Anoncoin: Активен
