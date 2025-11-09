@@ -1,478 +1,375 @@
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
-const { v4: uuidv4 } = require('uuid');
+const emailjs = require('emailjs-com');
+const WebSocket = require('ws');
+const http = require('http');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const wss = new WebSocket.Server({ server });
 
+// Порт для Render
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
+// Разрешаем CORS для всех доменов
+app.use(cors({
+  origin: ['http://localhost:8081', 'https://anongram-app.com', 'exp://*'],
+  credentials: true
+}));
+
 app.use(express.json());
 
-// In-memory database
-let db = {
-  users: [],
+// Инициализация EmailJS
+emailjs.init('LfvlC9bOj9c-YHSWTbrof');
+
+// Глобальное хранилище (в продакшене заменить на Redis)
+global.data = {
+  users: [
+    {
+      id: 1,
+      email: 'admin@anongram.com',
+      username: 'Admin',
+      code: '654321',
+      level: 100,
+      coins: 9999,
+      profession: 'Системный Админ',
+      isOnline: false,
+      lastSeen: Date.now()
+    },
+    {
+      id: 2, 
+      email: 'user1@test.com',
+      username: 'UserOne',
+      code: '111222',
+      level: 1,
+      coins: 100,
+      profession: 'Новичок',
+      isOnline: false,
+      lastSeen: Date.now()
+    },
+    {
+      id: 3,
+      email: 'user2@test.com', 
+      username: 'UserTwo',
+      code: '333444',
+      level: 1,
+      coins: 100,
+      profession: 'Новичок',
+      isOnline: false,
+      lastSeen: Date.now()
+    },
+    {
+      id: 4,
+      email: 'user3@test.com',
+      username: 'UserThree', 
+      code: '555666',
+      level: 1,
+      coins: 100,
+      profession: 'Новичок',
+      isOnline: false,
+      lastSeen: Date.now()
+    }
+  ],
   messages: [],
-  verificationCodes: [],
   professions: [
-    { id: 1, name: '🎨 Художник', level: 1 },
-    { id: 2, name: '📷 Фотограф', level: 1 },
-    { id: 3, name: '✍️ Писатель', level: 1 },
-    { id: 4, name: '😂 Мемодел', level: 1 },
-    { id: 5, name: '📚 Библиотекарь', level: 1 },
-    { id: 6, name: '🧪 Тестер', level: 1 }
-  ]
+    { id: 1, name: 'Художник', level: 1, description: 'Создание стикеров и оформления' },
+    { id: 2, name: 'Фотограф', level: 1, description: 'Фотоотчеты и мемы' },
+    { id: 3, name: 'Писатель', level: 1, description: 'Посты и статьи' },
+    { id: 4, name: 'Мемодел', level: 1, description: 'Развлекательный контент' },
+    { id: 5, name: 'Библиотекарь', level: 1, description: 'Модерация файлов' },
+    { id: 6, name: 'Тестер', level: 1, description: 'Тестирование функций' }
+  ],
+  verificationCodes: {},
+  connections: new Map() // WebSocket соединения
 };
 
-// Email configuration
-const emailConfig = {
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER || 'anongram.app@gmail.com',
-    pass: process.env.EMAIL_PASS || 'wqjk tvem xabc yzdf'
-  }
-};
-
-// ИСПРАВЛЕНО: createTransporter -> createTransport
-const emailTransporter = nodemailer.createTransport(emailConfig);
-
-// Utility functions
+// Функция отправки кода через EmailJS
 async function sendVerificationCode(email, code) {
   try {
-    await emailTransporter.sendMail({
-      from: 'Anongram <anongram.app@gmail.com>',
-      to: email,
-      subject: '🔐 Код подтверждения Anongram',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #667eea;">Добро пожаловать в Anongram! 🚀</h2>
-          <p>Ваш код подтверждения:</p>
-          <div style="background: #f8f9fa; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; color: #667eea; border-radius: 10px; margin: 20px 0;">
-            ${code}
-          </div>
-          <p>Введите этот код в приложении для завершения регистрации.</p>
-          <p style="color: #666; font-size: 14px;">Код действителен в течение 10 минут.</p>
-        </div>
-      `
-    });
-    console.log(`✅ Код ${code} отправлен на ${email}`);
-    return true;
+    console.log('📧 Отправка кода на:', email, 'Код:', code);
+    
+    const templateParams = {
+      to_email: email,
+      verification_code: code,
+      from_name: 'Anongram',
+      reply_to: 'anongram321@gmail.com'
+    };
+
+    const result = await emailjs.send(
+      'service_190j47r',
+      'template_qrtcabw', 
+      templateParams
+    );
+    
+    console.log('✅ Код отправлен на', email);
+    return { success: true };
   } catch (error) {
-    console.log('❌ Ошибка отправки email:', error);
-    return false;
+    console.error('❌ Ошибка отправки:', error);
+    return { success: false, error: error.text };
   }
 }
 
 // API Routes
 
-// Health check
+// Health check для Render
 app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: '🚀 Anongram Server v2.0',
-    version: '2.0.0',
+  res.json({ 
+    status: 'OK', 
+    message: 'Anongram Server Running',
     timestamp: new Date().toISOString(),
-    endpoints: {
-      'POST /api/auth/send-code': 'Отправить код на почту',
-      'POST /api/auth/verify': 'Подтвердить код',
-      'POST /api/auth/login': 'Войти',
-      'GET /api/users': 'Список пользователей',
-      'GET /api/system': 'Системная информация',
-      'POST /api/profession': 'Выбор профессии'
-    },
-    adminCodes: ['654321'],
-    userCodes: ['111222', '333444', '555666']
+    users: global.data.users.length
   });
 });
 
-// Send verification code
-app.post('/api/auth/send-code', async (req, res) => {
-  try {
-    const { email, nickname } = req.body;
+// Отправка кода подтверждения
+app.post('/api/send-code', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email обязателен' });
+  }
 
-    if (!email || !nickname) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Email и никнейм обязательны' 
-      });
-    }
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  global.data.verificationCodes[email] = {
+    code: code,
+    expires: Date.now() + 10 * 60 * 1000
+  };
 
-    // Check existing user
-    const existingUser = db.users.find(u => 
-      u.email === email || u.nickname === nickname
-    );
-    
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: 'Пользователь с таким email или никнеймом уже существует'
-      });
-    }
-
-    // Generate code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Save code
-    db.verificationCodes = db.verificationCodes.filter(c => c.email !== email);
-    db.verificationCodes.push({
-      email,
-      code,
-      nickname,
-      createdAt: new Date().toISOString()
+  const result = await sendVerificationCode(email, code);
+  
+  if (result.success) {
+    res.json({ 
+      success: true, 
+      message: 'Код отправлен на вашу почту',
+      debug_code: process.env.NODE_ENV === 'development' ? code : undefined
     });
-
-    // Send email
-    const emailSent = await sendVerificationCode(email, code);
-    
-    if (emailSent) {
-      res.json({
-        success: true,
-        message: '📧 Код отправлен на вашу почту',
-        email: email
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: 'Ошибка отправки кода на почту'
-      });
-    }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Внутренняя ошибка сервера'
+  } else {
+    res.status(500).json({ 
+      error: 'Ошибка отправки кода',
+      details: result.error 
     });
   }
 });
 
-// Verify code and register
-app.post('/api/auth/verify', (req, res) => {
-  try {
-    const { email, code, nickname } = req.body;
-
-    if (!email || !code || !nickname) {
-      return res.status(400).json({
-        success: false,
-        error: 'Все поля обязательны'
-      });
-    }
-
-    // Find verification code
-    const verification = db.verificationCodes.find(v => 
-      v.email === email && v.code === code
-    );
-
-    if (!verification) {
-      return res.status(400).json({
-        success: false,
-        error: 'Неверный код подтверждения'
-      });
-    }
-
-    // Check code expiration (10 minutes)
-    const codeAge = Date.now() - new Date(verification.createdAt).getTime();
-    if (codeAge > 10 * 60 * 1000) {
-      db.verificationCodes = db.verificationCodes.filter(v => v.email !== email);
-      return res.status(400).json({
-        success: false,
-        error: 'Код устарел'
-      });
-    }
-
-    // Create new user
+// Проверка кода и вход
+app.post('/api/verify-code', (req, res) => {
+  const { email, code } = req.body;
+  
+  // Проверка предустановленных пользователей
+  const existingUser = global.data.users.find(user => user.email === email && user.code === code);
+  if (existingUser) {
+    existingUser.isOnline = true;
+    existingUser.lastSeen = Date.now();
+    
+    // Уведомляем всех о онлайн статусе
+    broadcast({ type: 'user_online', userId: existingUser.id });
+    
+    return res.json({ 
+      success: true, 
+      user: {
+        id: existingUser.id,
+        email: existingUser.email,
+        username: existingUser.username,
+        level: existingUser.level,
+        coins: existingUser.coins,
+        profession: existingUser.profession,
+        isOnline: true
+      }
+    });
+  }
+  
+  // Проверка кода из email
+  if (!global.data.verificationCodes[email]) {
+    return res.status(400).json({ error: 'Код не найден или устарел' });
+  }
+  
+  const verification = global.data.verificationCodes[email];
+  
+  if (Date.now() > verification.expires) {
+    delete global.data.verificationCodes[email];
+    return res.status(400).json({ error: 'Код устарел' });
+  }
+  
+  if (verification.code === code) {
+    delete global.data.verificationCodes[email];
+    
     const newUser = {
-      id: uuidv4(),
-      email,
-      nickname,
-      avatar: null,
-      status: 'Новый пользователь Anongram',
+      id: global.data.users.length + 1,
+      email: email,
+      username: `User${global.data.users.length + 1}`,
+      code: code,
       level: 1,
-      xp: 0,
-      anoncoins: 100,
-      profession: null,
+      coins: 100,
+      profession: 'Новичок',
       isOnline: true,
-      lastSeen: new Date().toISOString(),
-      isAdmin: ['654321'].includes(code),
-      createdAt: new Date().toISOString()
+      lastSeen: Date.now()
     };
-
-    db.users.push(newUser);
-    db.verificationCodes = db.verificationCodes.filter(v => v.email !== email);
-
-    console.log(`🎉 Новый пользователь: ${nickname} (${email}) ${newUser.isAdmin ? '👑 ADMIN' : ''}`);
-
-    res.json({
-      success: true,
-      message: 'Регистрация успешна! 🎉',
+    
+    global.data.users.push(newUser);
+    
+    // Уведомляем о новом пользователе
+    broadcast({ type: 'user_joined', user: newUser });
+    
+    res.json({ 
+      success: true, 
       user: {
         id: newUser.id,
         email: newUser.email,
-        nickname: newUser.nickname,
-        avatar: newUser.avatar,
-        status: newUser.status,
+        username: newUser.username,
         level: newUser.level,
-        xp: newUser.xp,
-        anoncoins: newUser.anoncoins,
+        coins: newUser.coins,
         profession: newUser.profession,
-        isAdmin: newUser.isAdmin,
-        createdAt: newUser.createdAt
+        isOnline: true
       }
     });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Внутренняя ошибка сервера'
-    });
+  } else {
+    res.status(400).json({ error: 'Неверный код' });
   }
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email обязателен'
-      });
-    }
-
-    const user = db.users.find(u => u.email === email);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'Пользователь не найден'
-      });
-    }
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    db.verificationCodes = db.verificationCodes.filter(c => c.email !== email);
-    db.verificationCodes.push({
-      email,
-      code,
-      createdAt: new Date().toISOString()
-    });
-
-    const emailSent = await sendVerificationCode(email, code);
-    
-    if (emailSent) {
-      res.json({
-        success: true,
-        message: '📧 Код для входа отправлен на вашу почту',
-        email: email
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: 'Ошибка отправки кода'
-      });
-    }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Внутренняя ошибка сервера'
-    });
-  }
-});
-
-// Get users list
+// Получение списка пользователей
 app.get('/api/users', (req, res) => {
-  const users = db.users.map(user => ({
+  const users = global.data.users.map(user => ({
     id: user.id,
-    nickname: user.nickname,
-    avatar: user.avatar,
-    status: user.status,
+    username: user.username,
     level: user.level,
     profession: user.profession,
     isOnline: user.isOnline,
-    lastSeen: user.lastSeen,
-    isAdmin: user.isAdmin
+    lastSeen: user.lastSeen
   }));
-  
-  res.json({
-    success: true,
-    users: users,
-    total: users.length
-  });
+  res.json(users);
 });
 
-// System information
-app.get('/api/system', (req, res) => {
-  const systemInfo = {
-    server: {
-      version: '2.0.0',
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString()
-    },
-    statistics: {
-      totalUsers: db.users.length,
-      onlineUsers: db.users.filter(u => u.isOnline).length,
-      totalMessages: db.messages.length,
-      totalAnoncoins: db.users.reduce((sum, user) => sum + user.anoncoins, 0)
-    },
-    features: [
-      'Аутентификация по коду из почты',
-      'Система профессий по уровням',
-      'Чат в реальном времени',
-      'Экономика Anoncoin',
-      'WebSocket соединения'
-    ]
+// Получение профессий
+app.get('/api/professions', (req, res) => {
+  res.json(global.data.professions);
+});
+
+// Выбор профессии
+app.post('/api/select-profession', (req, res) => {
+  const { userId, professionId } = req.body;
+  
+  const user = global.data.users.find(u => u.id === userId);
+  const profession = global.data.professions.find(p => p.id === professionId);
+  
+  if (!user || !profession) {
+    return res.status(400).json({ error: 'Пользователь или профессия не найдены' });
+  }
+  
+  user.profession = profession.name;
+  
+  // Уведомляем об изменении профессии
+  broadcast({ 
+    type: 'profession_changed', 
+    userId: user.id, 
+    profession: profession.name 
+  });
+  
+  res.json({ success: true, profession: profession.name });
+});
+
+// Система сообщений
+app.post('/api/send-message', (req, res) => {
+  const { userId, text, chatId } = req.body;
+  
+  const user = global.data.users.find(u => u.id === userId);
+  if (!user) {
+    return res.status(400).json({ error: 'Пользователь не найден' });
+  }
+  
+  const message = {
+    id: global.data.messages.length + 1,
+    userId: userId,
+    username: user.username,
+    text: text,
+    chatId: chatId || 'global',
+    timestamp: Date.now(),
+    reactions: []
   };
   
-  res.json({
-    success: true,
-    ...systemInfo
+  global.data.messages.push(message);
+  
+  // Рассылаем сообщение всем через WebSocket
+  broadcast({
+    type: 'new_message',
+    message: message
   });
+  
+  res.json({ success: true, message: message });
 });
 
-// Select profession
-app.post('/api/profession', (req, res) => {
-  try {
-    const { userId, professionId } = req.body;
-
-    const user = db.users.find(u => u.id === userId);
-    const profession = db.professions.find(p => p.id === professionId);
-
-    if (!user || !profession) {
-      return res.status(404).json({
-        success: false,
-        error: 'Пользователь или профессия не найдены'
-      });
-    }
-
-    if (user.level < profession.level) {
-      return res.status(400).json({
-        success: false,
-        error: `Недостаточный уровень. Требуется уровень ${profession.level}`
-      });
-    }
-
-    user.profession = profession.name;
-    
-    res.json({
-      success: true,
-      message: `🎯 Теперь вы ${profession.name}!`,
-      profession: profession.name
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Внутренняя ошибка сервера'
-    });
-  }
+// Получение сообщений чата
+app.get('/api/messages/:chatId', (req, res) => {
+  const { chatId } = req.params;
+  const messages = global.data.messages
+    .filter(msg => msg.chatId === chatId)
+    .slice(-50); // Последние 50 сообщений
+  
+  res.json(messages);
 });
 
-// WebSocket for real-time chat
-io.on('connection', (socket) => {
-  console.log('🔌 Новое подключение:', socket.id);
-
-  socket.on('user:join', (userId) => {
-    socket.join(userId);
-    const user = db.users.find(u => u.id === userId);
-    if (user) {
-      user.isOnline = true;
-      user.lastSeen = new Date().toISOString();
+// Функция рассылки сообщений через WebSocket
+function broadcast(data) {
+  const message = JSON.stringify(data);
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
     }
-    console.log(`👤 Пользователь ${userId} онлайн`);
-    
-    // Notify others
-    socket.broadcast.emit('user:status', {
-      userId,
-      isOnline: true
-    });
   });
+}
 
-  socket.on('message:send', (data) => {
-    const { senderId, receiverId, text, type = 'text' } = data;
-    
-    const newMessage = {
-      id: uuidv4(),
-      senderId,
-      receiverId,
-      text,
-      type,
-      timestamp: new Date().toISOString(),
-      read: false
-    };
-
-    db.messages.push(newMessage);
-
-    // Send to receiver
-    socket.to(receiverId).emit('message:new', newMessage);
-    // Confirm to sender
-    socket.emit('message:new', newMessage);
-
-    console.log(`💬 Сообщение от ${senderId} к ${receiverId}`);
-
-    // Add XP for message
-    const sender = db.users.find(u => u.id === senderId);
-    if (sender) {
-      sender.xp += 10;
-      const newLevel = Math.floor(sender.xp / 100) + 1;
-      if (newLevel > sender.level) {
-        const oldLevel = sender.level;
-        sender.level = newLevel;
-        sender.anoncoins += newLevel * 10;
-        
-        console.log(`🎉 Уровень UP! ${sender.nickname}: ${oldLevel} → ${newLevel}`);
-        
-        socket.emit('user:levelup', {
-          oldLevel,
-          newLevel,
-          reward: newLevel * 10
-        });
+// WebSocket для реального чата
+wss.on('connection', (ws) => {
+  console.log('🔗 Новое WebSocket соединение');
+  
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      console.log('📨 WebSocket сообщение:', data);
+      
+      // Обрабатываем разные типы сообщений
+      switch (data.type) {
+        case 'ping':
+          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+          break;
+        case 'user_typing':
+          broadcast({
+            type: 'user_typing',
+            userId: data.userId,
+            isTyping: data.isTyping
+          });
+          break;
+        default:
+          // Рассылка сообщения всем клиентам
+          broadcast(data);
       }
+    } catch (error) {
+      console.error('Ошибка обработки WebSocket сообщения:', error);
     }
   });
-
-  socket.on('message:read', (messageId) => {
-    const message = db.messages.find(m => m.id === messageId);
-    if (message) {
-      message.read = true;
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('🔌 Отключение:', socket.id);
+  
+  ws.on('close', () => {
+    console.log('🔌 WebSocket соединение закрыто');
   });
 });
 
-// Start server
+// Старт сервера
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`
-✨ ===================================================
-🚀 ANONGRAM SERVER v2.0 ЗАПУЩЕН!
-📍 Порт: ${PORT}
-🌐 URL: https://anongram-server.onrender.com
-📧 Email: ${emailConfig.auth.user}
-💬 WebSocket: Готов
-💰 Anoncoin: Активен
-🎯 Профессии: ${db.professions.length}
-✨ ===================================================
-
-📋 Тестовые коды:
-   👑 Админ: 654321
-   👥 Пользователи: 111222, 333444, 555666
-
-🔗 API Endpoints:
-   GET  /              - Информация о сервере
-   POST /api/auth/send-code - Отправить код
-   POST /api/auth/verify    - Подтвердить код
-   POST /api/auth/login     - Вход
-   GET  /api/users          - Список пользователей  
-   GET  /api/system         - Системная информация
-   POST /api/profession     - Выбор профессии
-  `);
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  console.log(`🌐 Доступен по: http://0.0.0.0:${PORT}`);
+  console.log(`📧 EmailJS настроен с сервисом: service_190j47r`);
+  console.log(`👥 Пользователей: ${global.data.users.length}`);
+  console.log(`💬 Сообщений: ${global.data.messages.length}`);
 });
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🛑 Получен SIGTERM, завершаем работу...');
+  server.close(() => {
+    console.log('✅ Сервер остановлен');
+    process.exit(0);
+  });
+});
+
+module.exports = app;
